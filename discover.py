@@ -522,17 +522,34 @@ _DEFAULT_TITLE_INCLUDE = (
     r"new[\s\-]?grad|entry[\s\-]?level|university grad|early career"
     r"|\bjunior\b|\b2026\b|\b2027\b|newgrad|recent grad")
 _DEFAULT_TITLE_EXCLUDE = r"\bintern(ship)?s?\b"
+# Tier-2 default: role keywords / junior signals without an explicit new-grad
+# marker (SDE/MLE/developer live here, NOT in title_include, so senior
+# postings can't flood tier-1 and jam the auto-scaling window).
+_DEFAULT_TITLE_TIER2 = (
+    r"\bsde\b|\bmle\b|\bdeveloper\b|\bsoftware engineer\b|\bengineer i\b"
+    r"|0[\s\-–]*2 years|0\+ years|recent graduate|\buniversity\b")
+
+# Tier-2 senior guard: obvious senior titles never belong in the low-priority
+# pool — dropped in code so the LLM judge never spends effort on them.
+# (Tier-1 is untouched: an explicit new-grad marker always wins.)
+_SENIOR_TITLE_RE = re.compile(
+    r"\bsenior\b|\bstaff\b|\bprincipal\b|\blead\b|\bsr\.?\b"
+    r"|\bdirector\b|\bmanager\b|\barchitect\b|\biii\b|\biv\b", re.I)
 
 def compile_title_filters(cfg):
     d = (cfg.get("discovery") or {})
     inc = d.get("title_include") or [_DEFAULT_TITLE_INCLUDE]
     exc = d.get("title_exclude") or [_DEFAULT_TITLE_EXCLUDE]
+    t2 = d.get("title_tier2_include") or [_DEFAULT_TITLE_TIER2]
     if isinstance(inc, str):
         inc = [inc]
     if isinstance(exc, str):
         exc = [exc]
+    if isinstance(t2, str):
+        t2 = [t2]
     return (re.compile("|".join(f"(?:{p})" for p in inc), re.I),
-            re.compile("|".join(f"(?:{p})" for p in exc), re.I))
+            re.compile("|".join(f"(?:{p})" for p in exc), re.I),
+            re.compile("|".join(f"(?:{p})" for p in t2), re.I))
 
 # Lane keywords live on each lane in config.yaml (lane.keywords).
 # _LEGACY_LANE_KEYWORDS keeps configs without a keywords key working.
@@ -609,7 +626,7 @@ def main():
     lanes_by_priority = [l["name"] for l in lanes_cfg]
     queries = [q for l in lanes_cfg for q in l.get("queries", [])]
     blacklist = [b.lower() for b in (cfg.get("blacklist", {}) or {}).get("companies", [])]
-    title_include_re, title_exclude_re = compile_title_filters(cfg)
+    title_include_re, title_exclude_re, title_tier2_re = compile_title_filters(cfg)
 
     stats = {"boards_ok": 0, "boards_failed": 0, "pulled": 0,
              "deduped": 0, "disqualified": 0, "candidates": 0, "li_ok": 0, "li_failed": 0}
@@ -660,10 +677,20 @@ def main():
         if any(b in company.lower() for b in blacklist):
             return
         text = f"{job.get('title','')} {job.get('snippet','')}"
-        # (c) title include/exclude (config-driven; defaults = new-grad SDE)
+        # (c) title include/exclude (config-driven; defaults = new-grad SDE).
+        # Tier-1 = explicit new-grad marker. Tier-2 = role keyword / junior
+        # signal without the marker (SDE/MLE/developer/…); sorted after tier-1
+        # and flagged for stricter judging. Intern exclusion applies to both.
         if title_exclude_re.search(job.get("title", "")):
             return
-        if not title_include_re.search(text):
+        if title_include_re.search(text):
+            tier = 1
+        elif title_tier2_re.search(text):
+            tier = 2
+        else:
+            return
+        if tier == 2 and _SENIOR_TITLE_RE.search(job.get("title", "")):
+            stats["senior_dropped"] = stats.get("senior_dropped", 0) + 1
             return
         # (d) lane keyword match (keywords live on each lane in config.yaml)
         lane = lane_of(text, lanes_cfg)
@@ -683,7 +710,7 @@ def main():
             "location": job.get("location", ""), "url": url,
             "date": job.get("date", ""), "lane": lane,
             "snippet": (job.get("snippet") or "")[:160],
-            "source": job.get("source", ""),
+            "source": job.get("source", ""), "tier": tier,
             "_loc": ls, "_date": job.get("date", ""), "_age_h": age_h,
         })
         if job.get("manual_likely"):
@@ -772,7 +799,11 @@ def main():
         min_candidates = disc_cfg.get("min_candidates", 20)
         window_days = steps[-1]
         for w in steps:
-            in_w = sum(1 for c in pool if c["_age_h"] is None or c["_age_h"] <= w * 24)
+            # Window scales on tier-1 (explicit new-grad) only, so tier-2
+            # volume can never jam the window tight and crowd out tier-1.
+            in_w = sum(1 for c in pool
+                       if c.get("tier", 1) == 1
+                       and (c["_age_h"] is None or c["_age_h"] <= w * 24))
             if in_w >= min_candidates:
                 window_days = w
                 break
@@ -785,11 +816,12 @@ def main():
 
     def sort_key(c):
         d = parse_date(c["_date"])
-        return (prio.get(c["lane"], 99), -c["_loc"], -(d.toordinal() if d else 0))
+        return (c.get("tier", 1), prio.get(c["lane"], 99), -c["_loc"], -(d.toordinal() if d else 0))
     windowed.sort(key=sort_key)
 
-    candidates = [{k: c[k] for k in ("company", "title", "location", "url", "date", "lane", "snippet", "source")}
+    candidates = [{k: c[k] for k in ("company", "title", "location", "url", "date", "lane", "snippet", "source", "tier")}
                   for c in windowed[:args.max_candidates or disc_cfg.get("browse_target", 60)]]
+    stats["tier2"] = sum(1 for c in candidates if c.get("tier") == 2)
     stats["candidates"] = len(candidates)
     elapsed = time.time() - t0
 
@@ -843,8 +875,9 @@ def main():
           f"li_queries_ok={stats['li_ok']}/{stats['li_ok']+stats['li_failed']} "
           f"jobs_pulled={stats['pulled']} deduped_skipped={stats['deduped']} "
           f"disqualified={stats['disqualified']} "
+          f"senior_dropped={stats.get('senior_dropped', 0)} "
           f"window_d={stats['window_days']} "
-          f"candidates={stats['candidates']} elapsed_s={elapsed:.1f} "
+          f"candidates={stats['candidates']} tier2={stats.get('tier2', 0)} elapsed_s={elapsed:.1f} "
           f"watermark={run_n} closed_marked={closed_marked} health={health_tok}")
     if failed_boards:
         print("failed_boards: " + ", ".join(failed_boards[:10]))
@@ -852,7 +885,8 @@ def main():
         print("health_alerts: " + "; ".join(health_alerts[:10]))
     if args.dry_run:
         for c in candidates[:15]:
-            print(f"  - [{c['lane']}] {c['company']} — {c['title']} ({c['location']}, {c['date']})")
+            t2 = " [T2]" if c.get("tier") == 2 else ""
+            print(f"  - [{c['lane']}]{t2} {c['company']} — {c['title']} ({c['location']}, {c['date']})")
 
 if __name__ == "__main__":
     main()

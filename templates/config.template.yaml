@@ -27,6 +27,22 @@ discovery:
     - 'recent grad'
   title_exclude:
     - '\bintern(ship)?s?\b'
+  # Tier-2 (low priority): role keywords / junior signals WITHOUT an explicit
+  # new-grad marker. Postings matching these (and lane keywords + location)
+  # enter the pool sorted AFTER tier-1, flagged "tier": 2 for stricter judging.
+  # SDE/MLE/developer live here, NOT in title_include — senior postings must
+  # not flood tier-1 and jam the auto-scaling recency window. Obvious senior
+  # titles (senior/staff/principal/lead/III/IV/…) are dropped in code.
+  title_tier2_include:
+    - '\bsde\b'              # SDE / SDE I / SDE II
+    - '\bmle\b'              # MLE
+    - '\bdeveloper\b'        # Software Developer / Developer
+    - '\bsoftware engineer\b'
+    - '\bengineer i\b'       # leveling signal, e.g. "Software Engineer I"
+    - '0[\s\-–]*2 years'     # "0-2 years of experience"
+    - '0\+ years'            # "0+ years"
+    - 'recent graduate'
+    - '\buniversity\b'       # "university graduates"
 
 # One entry per resume. The agent matches each role to the best-fit lane
 # and uploads that lane's resume automatically.
@@ -52,6 +68,8 @@ lanes:
     queries:
       - "new grad software engineer agent infrastructure"
       - "new grad AI agent platform engineer"
+      - "junior SDE new grad software engineer 2026"
+      - "junior MLE machine learning engineer new grad"
   - name: ai_cloud
     resume: "Your_Name_-_AI_Cloud.pdf"
     priority: 2
@@ -68,6 +86,7 @@ lanes:
     queries:
       - "new grad backend engineer cloud infrastructure"
       - "new grad software engineer distributed systems"
+      - "entry level software developer cloud infrastructure new grad"
   - name: genai
     resume: "Your_Name_-_GenAI.pdf"
     priority: 3
@@ -80,6 +99,7 @@ lanes:
       - "ai engineer"
     queries:
       - "new grad software engineer LLM"
+      - "junior AI engineer LLM new grad"
 
 locations:
   preferred: ["remote", "california"]
