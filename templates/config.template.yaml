@@ -173,3 +173,6 @@ curated_sources:
   - name: simplifyjobs-new-grad
     url: https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md
     sections: ["Software Engineering", "Data Science"]
+  - name: resumax-new-grad-tech
+    url: https://raw.githubusercontent.com/resumax/new-grad-tech-jobs/main/README.md
+    sections: ["Software Engineering", "Data, AI & ML", "DevOps, Infra & Cloud"]

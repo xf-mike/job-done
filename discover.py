@@ -335,10 +335,11 @@ def _parse_curated_html(text, sections):
 
 def _parse_curated_markdown(text, sections):
     """Parse markdown-table job lists: | Company | Role | Location |
-    Application | Age |. Defensive about wrapped rows (joins consecutive
-    |-lines)."""
+    Application | Age |. A logical row may wrap across multiple physical
+    lines: a physical line whose cell count reaches the header's starts a
+    new row, shorter lines are continuations of the previous row."""
     jobs = []
-    section, buf = "", ""
+    section = ""
     last_company = ""
 
     def parse_row(b):
@@ -348,8 +349,15 @@ def _parse_curated_markdown(text, sections):
             return None
         if re.match(r"^:?-{2,}:?$", cells[0]) or cells[0].lower() == "company":
             return None  # header / separator row
-        company_raw, role, loc, app_cell, age_cell = cells[:5]
+        # Column layout varies by list (5-col: Company|Role|Location|Apply|Age;
+        # 6-col: Company|Role|Location|Apply|Tailor|Age). The first four are
+        # stable; Age is always the last column.
+        company_raw, role, loc, app_cell = cells[:4]
+        age_cell = cells[-1]
         company = re.sub(r"\*+", "", company_raw).strip()
+        # Company may be a markdown link: [Name](url) — extract the text so
+        # the URL doesn't get mashed into the company name by clean_company.
+        company = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", company).strip()
         if "\U0001f512" in company_raw:  # 🔒 closed posting
             return None
         if company == "↳" or not company:
@@ -372,26 +380,35 @@ def _parse_curated_markdown(text, sections):
                                  re.sub(r"\*+", "", loc).strip(),
                                  apply_url, age_cell, section)
 
+    rows, cur, ncols = [], "", 0
+
+    def flush_table():
+        nonlocal rows, cur, ncols
+        if cur:
+            rows.append(cur)
+            cur = ""
+        for r in rows:
+            j = parse_row(r)
+            if j:
+                jobs.append(j)
+        rows, ncols = [], 0
+
     for raw in text.splitlines():
         s = raw.strip()
         if s.startswith("## "):
-            if buf:
-                j = parse_row(buf)
-                if j:
-                    jobs.append(j)
-                buf = ""
+            flush_table()
             section = re.sub(r"^[^\w]+", "", s[3:]).strip()
         elif s.startswith("|"):
-            buf += " " + s
-        elif buf:
-            j = parse_row(buf)
-            if j:
-                jobs.append(j)
-            buf = ""
-    if buf:
-        j = parse_row(buf)
-        if j:
-            jobs.append(j)
+            ncells = len(s.strip().strip("|").split("|"))
+            if ncols == 0:
+                ncols = ncells  # header defines the expected width
+            if ncells >= ncols and cur:
+                rows.append(cur)
+                cur = ""
+            cur += " " + s
+        elif cur:
+            flush_table()
+    flush_table()
 
     if sections:
         wanted = [w.lower() for w in sections]
