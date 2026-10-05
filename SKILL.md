@@ -67,6 +67,11 @@ For each selected role:
       submit. Mark the role blocked-manual with reason
       `risky question: <the question>` and list it in the final report. A weak
       application is recoverable; a misrepresentation or an unwanted legal
+   e. **Never write non-Q&A data into the bank.** `state/qa_bank.json` must
+      stay a JSON list of `{question, answer, ...}` entries — never role or
+      seen-role data. (Seen 2026-10-03: the file was overwritten with a stale
+      `seen_roles.json` copy, which silently disabled all bank reuse; fixed by
+      restoring `[]`.)
       commitment is not.
    Rules: drafts are used and banked on first encounter — no pre-approval gate;
       each is quoted verbatim in the final report for after-the-fact correction.
