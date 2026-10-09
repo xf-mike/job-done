@@ -11,6 +11,12 @@ discovery:
   shortlist_size: 20     # roles surfaced to the user per run (fill stage filters further)
   min_candidates: 20     # auto-scaling window expands until this many pre-filter roles
   window_steps_days: [1, 3, 7, 14, 30]  # start 24h, expand stepwise while too few
+  # Curated-list liveness probe (2026-10-09): community lists go stale, so
+  # rows from curated_sources get a best-effort liveness check on their apply
+  # URL before shortlisting. Only confident dead signals (HTTP 404/410, or a
+  # dead-posting marker in the page) drop a row; any ambiguity keeps it, and
+  # drops are in-run only (re-probed next run). Disable with false.
+  curated_verify_liveness: true
   # Title filters: which postings are even eligible. Regex fragments,
   # case-insensitive. A posting must match at least one title_include and
   # none of title_exclude (exclude is checked against the title only).

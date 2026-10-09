@@ -65,7 +65,7 @@ def job_identity(job):
     different URL (e.g. two LinkedIn postings for one Workday JR- number),
     and roles the user already applied to outside the pipeline.
     """
-    url = job.get("url", "")
+    url = job.get("url") or ""
     req_id = ""
     for pat in (r"gh_jid=(\d+)", r"[?&]jobId=(\d+)", r"(JR-\d+)",
                 r"/jobs/(\d{5,})", r"job/([A-Za-z0-9_-]{20,})"):
@@ -529,6 +529,117 @@ def fetch_curated_list(url, sections):
     except Exception:
         return []
 
+# ------------------------------------------------- curated liveness ----
+# Community lists go stale: a row can linger weeks after the posting closed
+# (e.g. Sydecar + OPEN Data Jobs, both ~3 weeks dead, burned 2 of 5
+# shortlist slots on 2026-10-09). Curated entries get a best-effort liveness
+# probe on their apply URL before shortlisting. Only confident dead signals
+# drop a row: HTTP 404/410, an ATS board API that no longer lists the
+# posting (Ashby/Greenhouse), a redirect that collapses the job URL to the
+# org root (e.g. Workable's ?not_found=true), or a dead-posting marker in
+# the page text. Any network trouble, bot-wall, timeout or ambiguous page
+# keeps the row (never drop on missing data). Drops are in-run only; the
+# row is re-probed next run, so a transient failure costs one run at most.
+DEAD_PAGE_MARKERS = (
+    "job not found",
+    "no longer accepting applications",
+    "this job posting has expired",
+    "job posting has expired",
+    "this job is no longer available",
+    "position has been filled",
+    "we couldn't find this job",
+    "this posting is no longer",
+)
+
+_BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+_ASHBY_BOARD_CACHE = {}  # org token -> set of listed jobUrls (per run)
+
+def _ashby_posting_listed(org, posting_id):
+    """True if the posting id is still on the org's public Ashby board.
+    Ashby renders dead postings as a 200 JS shell, so the page itself is
+    useless — the public posting-api board listing is the source of truth."""
+    try:
+        if org not in _ASHBY_BOARD_CACHE:
+            data = http_get_json(
+                f"https://api.ashbyhq.com/posting-api/job-board/{org}")
+            _ASHBY_BOARD_CACHE[org] = {(j.get("jobUrl") or "")
+                                       for j in data.get("jobs", [])}
+        return any(posting_id in u for u in _ASHBY_BOARD_CACHE[org])
+    except Exception:
+        return True  # board API trouble: keep, never drop
+
+def _greenhouse_job_alive(url):
+    """True if a Greenhouse posting URL still resolves via the public
+    boards API (single-job endpoint 404s once the posting is closed)."""
+    m = re.search(r"greenhouse\.io/([a-z0-9_-]+)/jobs/(\d+)", url, re.I)
+    if not m:
+        return True
+    token, jid = m.group(1), m.group(2)
+    try:
+        http_get_json(
+            f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{jid}")
+        return True
+    except urllib.error.HTTPError as e:
+        return e.code != 404
+    except Exception:
+        return True
+
+_JOB_PATH_RE = re.compile(
+    r"/(j|job|jobs|posting|position|opening|vacancy|apply|requisition)/|\d{4,}",
+    re.I)
+
+def _url_collapsed_to_root(original, final):
+    """True if a job URL redirected onto the site/org root (posting gone,
+    e.g. Workable's ?not_found=true). Cross-host redirects (ATS apply
+    forms) and login walls are never treated as dead."""
+    if not final:
+        return False
+    if "not_found" in final or "notfound" in final:
+        return True
+    if final.split("?")[0].rstrip("/") == original.split("?")[0].rstrip("/"):
+        return False  # no redirect happened
+    o, f = urllib.parse.urlparse(original), urllib.parse.urlparse(final)
+    if o.netloc != f.netloc:
+        return False
+    if re.search(r"login|signin|sign-in|auth", f.path, re.I):
+        return False
+    o_segs = [s for s in o.path.split("/") if s]
+    f_segs = [s for s in f.path.split("/") if s]
+    return (bool(_JOB_PATH_RE.search(o.path)) and len(f_segs) <= 1
+            and not _JOB_PATH_RE.search(f.path)
+            and len(f_segs) < len(o_segs))
+
+def curated_job_alive(job, timeout=12):
+    """Best-effort liveness probe for a curated-list posting. True = keep."""
+    url = job.get("url") or ""
+    if not url.startswith(("http://", "https://")):
+        return True
+    if "ashbyhq.com" in url:
+        m = re.match(r"https?://jobs\.ashbyhq\.com/([^/]+)/([A-Za-z0-9-]+)",
+                     url)
+        if m:
+            return _ashby_posting_listed(m.group(1), m.group(2))
+    if "greenhouse.io" in url:
+        return _greenhouse_job_alive(url)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            final = resp.geturl()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "html" not in ctype and "text" not in ctype:
+                return True  # PDF / binary application packet: keep
+            body = resp.read(262144).decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as e:
+        return e.code not in (404, 410)
+    except Exception:
+        return True  # timeout / bot-wall / DNS trouble: keep, never drop
+    if _url_collapsed_to_root(url, final):
+        return False
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).lower()
+    return not any(m in text for m in DEAD_PAGE_MARKERS)
+
 # ------------------------------------------------- incremental state ---
 # Watermark + presence tracking let consecutive runs act incrementally and
 # detect silently-closed postings (ATS boards drop closed jobs without notice).
@@ -751,7 +862,7 @@ def main():
 
     def consider(job, board_company=""):
         stats["pulled"] += 1
-        url = job.get("url", "")
+        url = job.get("url") or ""
         if not url:
             return
         pulled_urls.append(url)  # presence: upserted even if filtered/deduped below
@@ -882,6 +993,7 @@ def main():
             return src.get("name") or src.get("url", "?"), [], e
 
     curated_cfg = cfg.get("curated_sources", []) or []
+    disc_cfg = cfg.get("discovery", {})
     if curated_cfg:
         with ThreadPoolExecutor(max_workers=4) as ex:
             for name, jobs, err in ex.map(fetch_curated, curated_cfg):
@@ -894,10 +1006,33 @@ def main():
                     j["source"] = src_name
                     consider(j)
 
+    # Curated liveness probe: community lists go stale — rows linger after
+    # postings close (e.g. Sydecar + OPEN Data Jobs burned 2 of 5 shortlist
+    # slots on 2026-10-09). Probe the apply URLs of curated rows that
+    # survived the cheap filters, before the recency window / shortlist, so
+    # dead rows never burn judging effort or a shortlist slot. Only
+    # confident dead signals drop a row: HTTP 404/410, an ATS board API that
+    # no longer lists the posting (Ashby/Greenhouse), a redirect collapsing
+    # the job URL onto the org root (e.g. Workable's ?not_found=true), or a
+    # dead-posting marker in the page text. Any network trouble, bot-wall,
+    # timeout or ambiguous page keeps the row (never drop on missing data).
+    # Drops are in-run only; the row is re-probed next run. Probing after
+    # the cheap filters keeps it to dozens of requests per run instead of
+    # thousands. Disable via discovery.curated_verify_liveness: false.
+    if disc_cfg.get("curated_verify_liveness", True):
+        curated_pool = [c for c in pool
+                        if (c.get("source") or "").startswith("curated:")]
+        if curated_pool:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                alive = list(ex.map(curated_job_alive, curated_pool))
+            dead = {c["url"] for c, ok in zip(curated_pool, alive) if not ok}
+            if dead:
+                stats["curated_dead_dropped"] = len(dead)
+                pool = [c for c in pool if c["url"] not in dead]
+
     # Auto-scaling recency window: start tight (default 24h), expand stepwise
     # until min_candidates pool entries are in-window (or the max step hits).
     # --max-age-days overrides to a fixed window (one-time backfill behavior).
-    disc_cfg = cfg.get("discovery", {})
     if args.max_age_days is not None:
         window_days = args.max_age_days
     else:
@@ -982,6 +1117,7 @@ def main():
           f"jobs_pulled={stats['pulled']} deduped_skipped={stats['deduped']} "
           f"disqualified={stats['disqualified']} "
           f"senior_dropped={stats.get('senior_dropped', 0)} "
+          f"curated_dead_dropped={stats.get('curated_dead_dropped', 0)} "
           f"window_d={stats['window_days']} "
           f"candidates={stats['candidates']} tier2={stats.get('tier2', 0)} elapsed_s={elapsed:.1f} "
           f"watermark={run_n} closed_marked={closed_marked} health={health_tok}")
