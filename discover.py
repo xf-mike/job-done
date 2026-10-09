@@ -417,14 +417,101 @@ def _parse_curated_markdown(text, sections):
     return jobs
 
 
+def _normalize_aggregator_url(url):
+    """Resolve zapply.jobs ``greenhouse-<token>-<jobid>`` redirect stubs to
+    the direct job-boards.greenhouse.io posting URL. Only rewrites on an
+    exact pattern match; everything else is returned untouched."""
+    m = re.match(r"^https?://zapply\.jobs/l/d/greenhouse-([a-z0-9-]+)-(\d+)"
+                 r"(?:[?#].*)?$", url, re.I)
+    if m:
+        return f"https://job-boards.greenhouse.io/{m.group(1)}/jobs/{m.group(2)}"
+    return url
+
+
+def _parse_curated_json(text, sections):
+    """Parse JSON curated job lists: a top-level list of job objects, e.g.
+    coconight01/2027-north-america-new-grad-jobs ``data/jobs.json``.
+
+    Each entry maps to the standard curated job dict. `sections` is a
+    substring filter matched against the snippet (which carries the source
+    category), mirroring the markdown/HTML parsers' behavior. Closed
+    entries are skipped. Best-effort: returns [] on any trouble."""
+    try:
+        data = json.loads(text)
+    except Exception:
+        return []
+    if isinstance(data, dict):
+        # tolerate {"jobs": [...]} / {"items": [...]} wrappers
+        for key in ("jobs", "items", "results", "data"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+    if not isinstance(data, list):
+        return []
+    jobs = []
+    for e in data:
+        if not isinstance(e, dict):
+            continue
+        status = str(e.get("status", "") or "").strip().lower()
+        if status and status not in ("open", "active", "hiring"):
+            continue
+        company = str(e.get("company", "") or "").strip()
+        role = str(e.get("role", "") or e.get("title", "") or "").strip()
+        url = str(e.get("url", "") or "").strip()
+        if not company or not role or not url:
+            continue
+        company = re.sub(r"[^\w\s&.,'\-]", "", company).strip() or company
+        url = _normalize_aggregator_url(url)
+        loc = re.sub(r"\*+", "", str(e.get("location", "") or "")).strip()
+        # Dates in these lists are already ISO YYYY-MM-DD; prefer the
+        # real posting date, fall back to when the list added it.
+        date_s = ""
+        for k in ("posted_date", "date_added", "date"):
+            v = str(e.get(k, "") or "").strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}", v):
+                date_s = v[:10]
+                break
+        category = str(e.get("category", "") or "").strip()
+        extra = []
+        for label, key in (("sponsorship", "sponsorship"),
+                           ("citizenship", "citizenship_required"),
+                           ("visa", "visa_evidence"),
+                           ("skills", "skills"),
+                           ("ng", "ng_confidence")):
+            v = str(e.get(key, "") or "").strip()
+            if v and v.lower() not in ("unknown", "not listed", "n/a", "na", ""):
+                extra.append(f"{label}: {v}")
+        sal = str(e.get("salary", "") or "").strip()
+        if sal and sal.lower() not in ("unknown", "not listed", "n/a", "na", ""):
+            extra.append(f"salary: {sal}")
+        elif e.get("salary_min_annual") or e.get("salary_max_annual"):
+            lo = e.get("salary_min_annual") or "?"
+            hi = e.get("salary_max_annual") or "?"
+            extra.append(f"salary: {lo}\u2013{hi}")
+        snippet = f"[{category}]" + ((" " + " | ".join(extra)) if extra else "")
+        jobs.append({
+            "company": company,
+            "title": role,
+            "location": loc,
+            "url": url,
+            "date": date_s,
+            "snippet": snippet,
+        })
+    if sections:
+        wanted = [w.lower() for w in sections]
+        jobs = [j for j in jobs
+                if any(w in j["snippet"].lower() for w in wanted)]
+    return jobs
+
+
 def fetch_curated_list(url, sections):
     """Fetch a community-curated job list and return job dicts.
 
-    Supports HTML <table> lists and markdown-table lists
-    (Company | Role | Location | Application | Age). `sections` is a
-    substring filter on the section heading (empty = all sections).
-    Best-effort: returns [] on any fetch/parse trouble so one bad list
-    never breaks the run.
+    Supports JSON job lists (URL path ends in .json), HTML <table> lists
+    and markdown-table lists (Company | Role | Location | Application |
+    Age). `sections` is a substring filter on the section heading (empty
+    = all sections). Best-effort: returns [] on any fetch/parse trouble
+    so one bad list never breaks the run.
     """
     try:
         req = urllib.request.Request(
@@ -434,6 +521,8 @@ def fetch_curated_list(url, sections):
     except Exception:
         return []
     try:
+        if url.lower().split("?")[0].endswith(".json"):
+            return _parse_curated_json(text, sections)
         if "<table" in text:
             return _parse_curated_html(text, sections)
         return _parse_curated_markdown(text, sections)
