@@ -455,9 +455,14 @@ def _parse_curated_json(text, sections):
         status = str(e.get("status", "") or "").strip().lower()
         if status and status not in ("open", "active", "hiring"):
             continue
+        # Some lists pre-screen rows themselves (e.g. harrycodingnow's
+        # new-grad-2027-tracker marks disqualified rows) — honor that.
+        if e.get("disqualified") is True:
+            continue
         company = str(e.get("company", "") or "").strip()
         role = str(e.get("role", "") or e.get("title", "") or "").strip()
-        url = str(e.get("url", "") or "").strip()
+        url = str(e.get("url", "") or e.get("application_url", "")
+                  or e.get("apply_url", "") or "").strip()
         if not company or not role or not url:
             continue
         company = re.sub(r"[^\w\s&.,'\-]", "", company).strip() or company
@@ -466,7 +471,7 @@ def _parse_curated_json(text, sections):
         # Dates in these lists are already ISO YYYY-MM-DD; prefer the
         # real posting date, fall back to when the list added it.
         date_s = ""
-        for k in ("posted_date", "date_added", "date"):
+        for k in ("posted_date", "date_posted", "date_added", "date"):
             v = str(e.get(k, "") or "").strip()
             if re.match(r"^\d{4}-\d{2}-\d{2}", v):
                 date_s = v[:10]
@@ -474,6 +479,7 @@ def _parse_curated_json(text, sections):
         category = str(e.get("category", "") or "").strip()
         extra = []
         for label, key in (("sponsorship", "sponsorship"),
+                           ("sponsorship", "sponsorship_classification"),
                            ("citizenship", "citizenship_required"),
                            ("visa", "visa_evidence"),
                            ("skills", "skills"),
