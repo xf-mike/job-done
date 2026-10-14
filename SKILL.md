@@ -1,7 +1,4 @@
----
-name: "job-pipeline"
-description: "Job Done: run the automated job-application pipeline — discover roles on a schedule, shortlist them for the user, fill applications, batch the reviews, submit on approval, and log everything to the tracker."
----
+
 
 # Job Done
 
@@ -11,10 +8,12 @@ An end-to-end, human-in-the-loop job application loop. Scheduled runs discover r
 
 ## Workflow
 
+**Path convention:** every path in this playbook (`discover.py`, `scripts/…`, `state/…`, `references/…`) is relative to the skill's install directory — the folder containing this `SKILL.md`. Run all commands from there. (The repo itself never hardcodes an install path; your own schedules/crons can use absolute paths.)
+
 ### Stage 1 — Discover (scheduled run, or "run the pipeline now")
 
 1. Run the API-first discovery script (non-interactive — it never prompts):
-   `python3 ~/workspace/skills/job-pipeline/discover.py`
+   `python3 discover.py`
    It pulls every board in `references/company_boards.json` through their public JSON APIs (Greenhouse / Ashby — no login needed), the LinkedIn guest search API for each lane query in `config.yaml`, and any curated job lists under `curated_sources:` (community-maintained tables, e.g. GitHub new-grad repos — they catch companies with no public ATS API), then applies programmatic filters in this order: dedupe against `state/seen_roles.json` FIRST (never re-surface a seen URL), `blacklist`, `discovery.title_exclude`/`title_include` (config-driven title filters — **tier-1** = explicit new-grad marker; **tier-2** = `discovery.title_tier2_include` role keywords / junior signals like SDE, MLE, developer, "0-2 years" *without* the marker, sorted after tier-1 and flagged `"tier": 2`), lane `keywords` (each lane in `config.yaml` carries its own), location fit — and recency via the **auto-scaling window** (starts 24h, expands stepwise to 30d until `discovery.min_candidates` **tier-1** roles are in-window, so tier-2 volume can never jam it; `--max-age-days` overrides to a fixed window for one-time backfills). It writes the compact pre-filtered set to `state/discovery_candidates.json` and prints a one-line summary (boards OK, jobs pulled, window used, candidates + tier-2 count, seconds, watermark run counter, newly-closed count). Typical runtime is 1–3 minutes at ~10x lower token cost than browsing page by page.
 2. Judge `state/discovery_candidates.json` in BATCHES: one LLM call scores and ranks ~10 roles at a time from title+company+location+date+snippet (never one call per role). Decide keep/reject from the snippet alone for clear cases; open a posting page ONLY for genuinely borderline roles, capped at ~5 page opens per run. Verify new-grad eligibility, lane fit, and sponsorship plausibility per `config.yaml` and `references/standing-answers.md`.
 3. Small web supplement (capped): 2–3 targeted web searches for fresh postings from companies with no public board API (YC Jobs has no stable public API; LinkedIn company pages beyond the guest search). Open at most ~10 pages total, and check `state/seen_roles.json` before opening any URL.
@@ -47,10 +46,10 @@ If `auto_select: true` in config.yaml, skip this step: proceed with all shortlis
 For each selected role:
 
 1. **Form structure (cached, no LLM re-parse):** before filling, run
-   `python3 ~/workspace/skills/job-pipeline/scripts/form_cache.py "<application URL>"`.
+   `python3 scripts/form_cache.py "<application URL>"`.
    It prints the board's cached field mapping (form labels → types/requirements), fetching the public structure only on a cache miss. Reuse that mapping to fill standard fields (name, email, phone, links, education, EEO, work authorization) from `profile.yaml` and `references/standing-answers.md` — do NOT have the LLM re-read and re-parse the entire form on every application. Only genuinely new/unknown fields get individual attention.
 2. **Free-text questions via the answer bank:** for every free-text/essay question on the form:
-   a. Run `python3 ~/workspace/skills/job-pipeline/scripts/qa_match.py --question "<exact question text>"` against `state/qa_bank.json`.
+   a. Run `python3 scripts/qa_match.py --question "<exact question text>"` against `state/qa_bank.json`.
    b. Score ≥ 0.75 → reuse the banked answer verbatim (still show it in the user review); bump its `use_count` in `state/qa_bank.json`.
    c. No match → draft the answer with the LLM exactly ONCE from the fact sheet
       (`profile.yaml` + `references/standing-answers.md`) and use it directly —
@@ -124,7 +123,7 @@ Submission is always via the browser flow: fill per Stage 3, park at the final r
 ### Stage 6 — Track (ongoing)
 
 The tracker is the source of truth. Run
-`python3 ~/workspace/skills/job-pipeline/scripts/gmail_scan.py`
+`python3 scripts/gmail_scan.py`
 on a schedule (every 4–6h; silent unless hits) to detect recruiter replies,
 interview invitations, and application confirmations: it is watermarked and
 incremental, pre-filters without any LLM, and matches senders against the
@@ -151,9 +150,9 @@ A role may match multiple lanes; assign the highest-priority matching lane and u
 2. Never click Submit without the user's submit authorization — which is either an explicit per-run "submit" / "submit all", or the standing `auto_submit: true` confirmed at onboarding with risks explained.
 3. Resume and transcript uploads are routine — never ask permission.
 4. Never invent: citizenship, DOB, SSN, test scores, demographic facts. For a required field with no true answer, use "N/A" only where `references/standing-answers.md` pre-authorizes it — otherwise skip the role and report it (never ask mid-flow).
-5. Education is always entered manually; never trust a site's resume auto-parse.
+5. Education is always entered manually; never trust a site's resume auto-parse. ALWAYS enter BOTH schools from `profile.yaml` (UCSD MS first, then Drexel BS) — never the bachelor's alone; omitting UCSD risks automated screening filters since it is the stronger credential. (Standing rule set by user 2026-10-08.) If the form has only ONE education slot, fill UCSD (the master's) only — never Drexel alone in a single-slot form. (Refinement set by user 2026-10-08.)
 6. `profile.yaml` and `state/` are personal — never include them when sharing the skill.
-7. Dedupe is sacred: check `state/seen_roles.json` before reading any role URL.
+7. Dedupe is sacred: check `state/seen_roles.json` before reading any role URL — and match against BOTH the entry key and the stored `url` / `company`+`title` fields, never the key alone. (A role first seen under one URL, e.g. LinkedIn, can resurface under another, e.g. Ashby — key-only matching caused the 2026-10-04 Netic Agent Platform duplicate submission.)
 8. Blocked means manual: CAPTCHA, site/backend errors, rate limits, unresponsive submit, widget bugs → close the browser immediately, no retries (not even scheduled ones), record URL + exact reason, report for the user to apply manually.
 9. **Human verification = automatic skip.** Any role whose submission requires human verification (CAPTCHA/image challenge, manual takeover, in-person checks) is skipped without asking — record URL + reason in `state/seen_roles.json` (`"decision": "blocked"`) and list it in the final report. Set by user 2026-09-29; this overrides the old "offer takeover" behavior.
 
@@ -161,6 +160,6 @@ A role may match multiple lanes; assign the highest-priority matching lane and u
 
 Public repo: https://github.com/xf-mike/job-done
 
-To give this to a friend, just send them the link. Their agent clones it into `~/workspace/skills/job-pipeline/` and follows `ONBOARDING.md` with them in conversation. The repo holds only the shareable playbook + templates — `profile.yaml`, `config.yaml`, and `state/` are gitignored, so personal data can never leak into it.
+To give this to a friend, just send them the link. Their agent clones it into their agent's skills folder and follows `ONBOARDING.md` with them in conversation. The repo holds only the shareable playbook + templates — `profile.yaml`, `config.yaml`, and `state/` are gitignored, so personal data can never leak into it.
 
-The repo is the source of truth for the playbook: edit `SKILL.md` / `ONBOARDING.md` / `templates/` in `~/workspace/skills/job-pipeline/`, then `git add -A && git commit -m "..." && git push`.
+The repo is the source of truth for the playbook: edit `SKILL.md` / `ONBOARDING.md` / `templates/` in your local clone, then `git add -A && git commit -m "..." && git push`.

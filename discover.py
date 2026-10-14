@@ -65,7 +65,7 @@ def job_identity(job):
     different URL (e.g. two LinkedIn postings for one Workday JR- number),
     and roles the user already applied to outside the pipeline.
     """
-    url = job.get("url", "")
+    url = job.get("url") or ""
     req_id = ""
     for pat in (r"gh_jid=(\d+)", r"[?&]jobId=(\d+)", r"(JR-\d+)",
                 r"/jobs/(\d{5,})", r"job/([A-Za-z0-9_-]{20,})"):
@@ -645,7 +645,7 @@ def main():
 
     def consider(job, board_company=""):
         stats["pulled"] += 1
-        url = job.get("url", "")
+        url = job.get("url") or ""
         if not url:
             return
         pulled_urls.append(url)  # presence: upserted even if filtered/deduped below

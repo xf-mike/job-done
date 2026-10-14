@@ -29,7 +29,7 @@ Job Done automates the *legwork* of a job hunt (finding roles, filling forms, wa
 
 Prerequisites: a personal AI agent environment (the pipeline was built on Muse), a Google account (for the tracker sheet + Gmail), and your resumes.
 
-1. Clone the repo into your agent's skills folder (`~/workspace/skills/job-pipeline/`).
+1. Clone the repo into your agent's skills folder.
 2. Follow `ONBOARDING.md` in conversation with your agent — ten steps:
    - **Step 1 — Resumes.** Provide 1–3 resumes; the agent extracts your profile.
    - **Step 2 — Confirm + fill gaps.** You confirm the extracted profile and fill what's missing (start date, relocation, EEO, work authorization…).
