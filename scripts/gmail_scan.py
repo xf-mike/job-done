@@ -37,6 +37,7 @@ ATS_DOMAINS = [
     "greenhouse-mail.io",
     "greenhouse.io",
     "lever.co",
+    "myworkday.com",
     "myworkdayjobs.com",
     "smartrecruiters.com",
     "icims.com",

@@ -90,7 +90,7 @@ The pipeline needs mailbox access for two things — this step cannot be skipped
 
 Which mailbox: the one the user puts on applications — usually the email already extracted in Step 1. Confirm it with them by citing the source ("your resume lists X — is that the one you apply with?"), never as a guess. If they connect a different mailbox, update the application email in `profile.yaml` and confirm the change explicitly in user terms.
 
-Follow the gmail skill's standard connect flow (`/opt/hatch/skills/gmail/SKILL.md`):
+Follow your agent platform's Gmail skill/connector standard connect flow:
 
 1. Run `hatch_gws_cli gmail status`.
 2. If it reports not connected, it returns a `connect_url` — post it to the user exactly as `[Connect Gmail](<connect_url>)` and wait for them to finish authorizing. Never invent a URL, never send them to Settings.
