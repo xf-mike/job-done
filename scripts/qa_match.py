@@ -41,7 +41,7 @@ import os
 import re
 import sys
 
-SKILL_DIR = os.environ.get("JOB_PIPELINE_DIR", "/home/hatch/workspace/skills/job-pipeline")
+SKILL_DIR = os.environ.get("JOB_PIPELINE_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BANK = os.path.join(SKILL_DIR, "state", "qa_bank.json")
 
 STOPWORDS = set(
