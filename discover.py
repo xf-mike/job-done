@@ -37,7 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 
-SKILL_DIR = os.environ.get("JOB_PIPELINE_DIR", "/home/hatch/workspace/skills/job-pipeline")
+SKILL_DIR = os.environ.get("JOB_PIPELINE_DIR") or os.path.dirname(os.path.abspath(__file__))
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"}
 HTTP_TIMEOUT = 20
 

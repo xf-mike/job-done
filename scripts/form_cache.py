@@ -42,7 +42,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 
-SKILL_DIR = os.environ.get("JOB_PIPELINE_DIR", "/home/hatch/workspace/skills/job-pipeline")
+SKILL_DIR = os.environ.get("JOB_PIPELINE_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIRNAME = os.path.join("state", "form_cache")
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"}
 HTTP_TIMEOUT = 20
