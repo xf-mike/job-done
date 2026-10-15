@@ -840,6 +840,9 @@ def main():
     args = ap.parse_args()
     t0 = time.time()
 
+    # Fresh-clone robustness: state/ is gitignored, so it may not exist yet.
+    os.makedirs(f"{SKILL_DIR}/state", exist_ok=True)
+
     cfg = load_config()
     boards = load_boards()
     seen = load_seen()
