@@ -62,7 +62,8 @@ CODE_SUBJECT_RES = [
 
 KIND_PATTERNS = [
     ("rejection", [
-        r"not moving forward", r"unfortunately", r"other candidates",
+        r"not moving forward", r"n[o']t be moving forward", r"unfortunately",
+        r"other candidates",
         r"decided not to", r"not selected", r"will not be proceeding",
         r"no longer under consideration",
     ]),
@@ -76,7 +77,8 @@ KIND_PATTERNS = [
     ]),
     ("confirmation", [
         r"thank you for applying", r"thanks for applying",
-        r"thanks for your application", r"application confirmation",
+        r"thank you for your application", r"thanks for your application",
+        r"application confirmation",
         r"application received", r"we received your application",
         r"application submitted", r"your application to",
     ]),
@@ -173,6 +175,49 @@ def classify(subject):
     return "other"
 
 
+REJECTION_RES = dict(KIND_PATTERNS)["rejection"]
+
+
+def snippet_for(message):
+    """Body text used to double-check a subject-only verdict.
+
+    Fixtures/tests may carry a pre-fetched 'body'. In production, fetch the
+    Gmail snippet (returned for every format) with one extra API call.
+    Returns '' when no body is available — callers must keep the
+    subject-only verdict in that case.
+    """
+    if message.get("body"):
+        return message["body"]
+    mid = message.get("id") or message.get("messageId") or message.get("message_id")
+    if not mid:
+        return ""
+    data = run_cli(["gmail", "users", "messages", "get", "--params",
+                    json.dumps({"userId": "me", "id": mid, "format": "metadata",
+                                "metadataHeaders": ["From", "Subject", "Date"]})])
+    if isinstance(data, dict):
+        return data.get("snippet", "") or ""
+    return ""
+
+
+def refine_kind(message, kind):
+    """Upgrade a subject-only 'confirmation' to 'rejection' when the body
+    says otherwise.
+
+    Workday rejections reuse the subject 'Thank you for your application' —
+    the signal ('won't be moving forward') lives in the body, so subject
+    matching alone misfiles them as confirmations (AVEVA R014948, 2026-10-20).
+    Only upgrades; a missing body keeps the subject verdict.
+    """
+    if kind != "confirmation":
+        return kind
+    s = (snippet_for(message) or "").lower()
+    if not s:
+        return kind
+    if any(re.search(p, s) for p in REJECTION_RES):
+        return "rejection"
+    return kind
+
+
 def match_company(sender, subject, companies):
     hay = norm(sender) + " " + norm(subject)
     for company in companies:
@@ -201,6 +246,7 @@ def process_messages(messages, companies):
         if is_code_subject(subject):
             continue  # verification-code flow owns these, not tracking
         company = match_company(sender, subject, companies)
+        kind = refine_kind(m, classify(subject))
         hits.append({
             "company": company,
             "company_guess": None if company else guess_company(sender),
@@ -208,7 +254,7 @@ def process_messages(messages, companies):
             "sender": sender,
             "date": m.get("message_sent_at", {}).get("user_local")
                     or m.get("date", ""),
-            "kind": classify(subject),
+            "kind": kind,
         })
     return hits
 
@@ -232,6 +278,16 @@ FIXTURES = [
     {"from": "UC San Diego Today <today@ucsd.edu>",
      "subject": "Campus news roundup",
      "date": "2026-09-29"},
+    # Workday rejection that reuses the confirmation subject — the rejection
+    # signal lives in the body (real case: AVEVA R014948, 2026-10-20).
+    {"from": "AVEVA | ETAP | RIB - Workday <aveva@myworkday.com>",
+     "subject": "Thank you for your application",
+     "date": "2026-10-20",
+     "body": ("Dear Xiao, Thank you for taking the time to apply for the Cloud "
+              "Operations & Infrastructure Graduate - USA position at AVEVA. "
+              "Your application has been reviewed by a member of our recruitment "
+              "team. While we won't be moving forward with your application this "
+              "time, we acknowledge the time and effort you've put in.")},
 ]
 
 
@@ -243,7 +299,7 @@ def main():
     args = ap.parse_args()
 
     if args.fixture:
-        companies = ["Replit", "Together AI", "Acme"]
+        companies = ["Replit", "Together AI", "Acme", "AVEVA"]
         hits = process_messages(FIXTURES, companies)
         print(json.dumps(hits, indent=2, ensure_ascii=False))
         kinds = {}
@@ -251,6 +307,16 @@ def main():
             kinds[h["kind"]] = kinds.get(h["kind"], 0) + 1
         print(f"fixture: {len(hits)} hits, kinds={kinds} "
               f"(code mail + non-ATS mail excluded as designed)")
+        # Lock the Workday body-check: a rejection hiding behind the
+        # 'Thank you for your application' subject must classify as rejection.
+        wd = next((h for h in hits
+                   if h["sender"].startswith("AVEVA")), None)
+        if not wd or wd["kind"] != "rejection":
+            print(f"FAIL: workday fixture classified as "
+                  f"{wd['kind'] if wd else 'missing'}, want rejection")
+            return 1
+        print("PASS: workday 'Thank you for your application' + rejection body "
+              "-> rejection")
         return 0
 
     wm = load_watermark()
