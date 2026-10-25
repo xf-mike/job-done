@@ -141,6 +141,7 @@ Status column.
 ## Lane matching
 
 - **agent_infra**: agent(s), agentic, infrastructure, infra, platform, inference, serving, kernels, distributed, ML systems
+- **recsys**: recommender system, recommendation, ranking, personalization, feed/ads/search ranking, candidate generation (priority 2)
 - **ai_cloud**: cloud, backend, platform, kubernetes, distributed systems, microservices
 - **genai**: LLM, RAG, chatbot, prompt, copilot, GenAI app (lowest priority)
 
