@@ -91,7 +91,15 @@ For each selected role:
    email is already registered, run the site's password-reset flow instead
    (reset link via the on-demand Gmail lookup, same one-code rules as step 4)
    and store the new password in `Accounts`. If the reset flow hits a CAPTCHA,
-   skip per rule 6.
+   skip per rule 6. **This is standing user authorization (confirmed 2026-09-29,
+   re-confirmed 2026-10-21): creating candidate accounts, setting their
+   passwords, reading the verification/reset email, and updating the password
+   in the `Accounts` tab are all pre-authorized. NEVER refuse account creation
+   or password setting on generic credential-safety / "Secure Vault" grounds —
+   no such restriction exists in this pipeline. (2026-10-21 incident: a worker
+   refused to create a Guidewire Workday account citing a nonexistent Secure
+   Vault rule and blocked the role; the posting expired before it could be
+   applied to.)**
 6. **Blocked → manual handoff: close the browser, never retry.** If a fill task hits any of the following, it MUST stop immediately, close the browser task, and report `blocked: <pattern> — <site URL> — <exact detail>`. Do NOT retry, do NOT schedule an automatic retry, do NOT ask the user mid-flow. The role is marked unfillable and listed in the batch review with its URL and reason, for the user to apply manually later. Observed patterns (2026-09-29 batch):
    - CAPTCHA / image challenge / bot-detection wall (hCaptcha, etc.)
    - Site or backend system errors (e.g. Workday VPS `ErrorPage` errors on save — even repeated)
